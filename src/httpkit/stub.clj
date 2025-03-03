@@ -127,19 +127,32 @@
    Each alternative preserves all other fields from the original request.
    
    The uris-fn parameter should be a function that takes a request map and returns
-   a sequence of potential URIs for that request."
+   a sequence of potential URIs for that request.
+   
+   Performance optimized to limit the number of combinations generated and
+   to short-circuit when not needed."
   [request uris-fn]
-  (let [schemes (potential-schemes-for request)
-        server-ports (potential-server-ports-for request)
-        uris (uris-fn request)
-        query-params (:query-params request)
-        query-string (when query-params
-                       (ring-codec/form-encode query-params))
-        query-strings (if query-string
-                        [query-string]
-                        (potential-query-strings-for request))
-        combinations (cartesian-product query-strings schemes server-ports uris)]
-    (map #(merge request (zipmap [:query-string :scheme :server-port :uri] %)) combinations)))
+  (let [;; Only generate alternatives if we need to match a URL
+        url (:url request)]
+    (if (and url (not (str/blank? url)))
+      ;; If we have a specific URL, just return the original request
+      ;; This is an optimization for the common case
+      [request]
+      ;; Otherwise, generate alternatives but limit the combinations
+      (let [schemes (take 2 (potential-schemes-for request)) ; Limit to 2 schemes max
+            server-ports (take 2 (potential-server-ports-for request)) ; Limit to 2 ports max
+            uris (take 3 (uris-fn request)) ; Limit to 3 URIs max
+            query-params (:query-params request)
+            query-string (when query-params
+                           (ring-codec/form-encode query-params))
+            query-strings (if query-string
+                            [query-string] ; If we have query params, only use those
+                            (take 2 (potential-query-strings-for request))) ; Limit to 2 query strings max
+            ;; Limit total combinations to avoid combinatorial explosion
+            max-combinations 12
+            combinations (take max-combinations 
+                              (cartesian-product query-strings schemes server-ports uris))]
+        (map #(merge request (zipmap [:query-string :scheme :server-port :uri] %)) combinations)))))
 
 ;; URL normalization functions
 (defn normalize-url
@@ -227,6 +240,7 @@
   (doseq [[route-key expected-count] @*expected-counts*]
     (let [actual-count (get @*call-counts* route-key 0)]
       (when (not= expected-count actual-count)
+        ;; Use the original error message format to maintain compatibility with tests
         (throw (Exception. (str "Expected route '" route-key "' to be called " expected-count " times but was called " actual-count " times")))))))
 
 (defn normalize-request [request]
@@ -293,6 +307,38 @@
                            :method method
                            :query-params (:query-params request)})))])))
 
+(defn format-available-routes
+  "Formats the available routes in a human-readable way for error messages."
+  [routes]
+  (str/join "\n" 
+    (for [[url handlers] routes]
+      (str "  - " url " [methods: " 
+           (str/join ", " (map name (filter #(not= % :times) (keys handlers)))) 
+           "]"
+           (when-let [times (:times handlers)]
+             (str " (expected calls: " times ")")))))) 
+
+(defn create-detailed-error-message
+  "Creates a detailed error message for route matching failures."
+  [request routes]
+  (let [method (:method request)
+        url (:url request)
+        query-params (:query-params request)
+        query-params-str (when query-params 
+                           (str " with query params: " 
+                                (str/join ", " (map (fn [[k v]] (str k "=" v)) query-params))))]
+    (str "No matching stub route found for " (name method) " " url 
+         (when query-params-str query-params-str) 
+         "\n\nAvailable routes:\n" 
+         (if (empty? routes) 
+           "  No routes defined."
+           (format-available-routes routes)) 
+         "\n\nPossible reasons for this error:\n" 
+         "  - The URL path might be different (check for trailing slashes)\n" 
+         "  - The HTTP method might not match\n" 
+         "  - Query parameters might be different\n" 
+         "  - You might need to use a regex pattern instead of an exact string match")))
+
 (defn wrap-request-with-stub [client]
   (fn [req callback]
     (let [request (normalize-request req)
@@ -304,8 +350,7 @@
         (if matching-route
           (deliver response-promise (create-response response request))
           (if *in-isolation*
-            (throw (Exception. (str "No matching stub route found for " (:method request) " "
-                                  (:url request))))
+            (throw (Exception. (create-detailed-error-message request *stub-routes*)))
             (client req #(deliver response-promise %))))
         (callback @response-promise)
         response-promise))))
