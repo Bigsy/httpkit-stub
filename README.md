@@ -1,5 +1,7 @@
 # httpkit-stub
 
+[![Clojars Project](https://img.shields.io/clojars/v/org.clojars.bigsy/httpkit-stub.svg)](https://clojars.org/org.clojars.bigsy/httpkit-stub)
+
 A library for stubbing out HTTP Kit requests in Clojure.
 
 ## Installation
