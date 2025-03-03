@@ -1,6 +1,6 @@
 # httpkit-stub
 
-A library for stubbing out HTTP Kit requests in Clojure. This is a specialized version of the [clj-http-stub](https://github.com/Bigsy/clj-http-stub) library that focuses exclusively on HTTP Kit client stubbing.
+A library for stubbing out HTTP Kit requests in Clojure.
 
 ## Installation
 

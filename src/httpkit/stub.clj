@@ -13,7 +13,9 @@
 (def ^:dynamic *expected-counts* (atom {}))
 
 ;; Helper functions
-(defn normalize-path [path]
+(defn normalize-path 
+  "Normalizes a URL path by ensuring it has a trailing slash if not empty."
+  [path]
   (cond
     (nil? path) "/"
     (str/blank? path) "/"
@@ -64,7 +66,8 @@
                  expected-query-params))))
 
 (defn parse-url
-  "Parse a URL string into a map containing :scheme, :server-name, :server-port, :uri, and :query-string"
+  "Parse a URL string into a map containing :scheme, :server-name, :server-port, :uri, and :query-string.
+   Uses the normalize-path function to ensure consistent URI formatting."
   [url]
   (let [[url query] (str/split url #"\?" 2)
         [scheme rest] (if (str/includes? url "://")
@@ -138,10 +141,32 @@
         combinations (cartesian-product query-strings schemes server-ports uris)]
     (map #(merge request (zipmap [:query-string :scheme :server-port :uri] %)) combinations)))
 
+;; URL normalization functions
+(defn normalize-url
+  "Comprehensive URL normalization function that handles various aspects of URL normalization.
+   Options is a map that can include:
+   - :remove-trailing-slash - removes trailing slashes (default: false)
+   - :normalize-path - ensures path has a trailing slash (default: true)
+   - :lowercase - converts the URL to lowercase (default: false)"
+  [url & [options]]
+  (let [{:keys [remove-trailing-slash normalize-path lowercase]
+         :or {remove-trailing-slash false
+              normalize-path true
+              lowercase false}} options]
+    (cond-> url
+      lowercase (str/lower-case)
+      remove-trailing-slash (str/replace #"/+$" "")
+      normalize-path (as-> u
+                       (if (str/includes? u "?")
+                         (let [[path query] (str/split u #"\?" 2)]
+                           (str (normalize-path path) "?" query))
+                         (normalize-path u))))))
+
 (defn normalize-url-for-matching
-  "Normalizes a URL string by removing trailing slashes for consistent matching"
+  "Normalizes a URL string by removing trailing slashes for consistent matching.
+   This is a specialized version of normalize-url with specific options."
   [url]
-  (str/replace url #"/+$" ""))
+  (normalize-url url {:remove-trailing-slash true, :normalize-path false}))
 
 (defn get-request-method
   "Gets the request method from either http-kit (:method) or clj-http (:request-method) style requests"
@@ -209,29 +234,31 @@
         parsed-url (when url (parse-url url))]
     (merge request parsed-url)))
 
-(defn with-stub-bindings [routes f]
-  (binding [*stub-routes* routes
-            *call-counts* (atom {})
-            *expected-counts* (atom {})]
-    (try
-      (let [result (f)]
-        (validate-all-call-counts)
-        result)
-      (catch Exception e
-        (validate-all-call-counts)
-        (throw e)))))
-
-(defn with-global-http-stub-base [routes f]
-  (alter-var-root #'*stub-routes* (constantly routes))
-  (reset! *call-counts* {})
-  (reset! *expected-counts* {})
+(defn execute-with-validation
+  "Common execution logic for both stub-bindings and global-http-stub.
+   Sets up the necessary state, executes the function, validates call counts,
+   and handles exceptions consistently."
+  [f]
   (try
     (let [result (f)]
       (validate-all-call-counts)
       result)
     (catch Exception e
       (validate-all-call-counts)
-      (throw e))
+      (throw e))))
+
+(defn with-stub-bindings [routes f]
+  (binding [*stub-routes* routes
+            *call-counts* (atom {})
+            *expected-counts* (atom {})]
+    (execute-with-validation f)))
+
+(defn with-global-http-stub-base [routes f]
+  (alter-var-root #'*stub-routes* (constantly routes))
+  (reset! *call-counts* {})
+  (reset! *expected-counts* {})
+  (try
+    (execute-with-validation f)
     (finally
       (alter-var-root #'*stub-routes* (constantly {})))))
 
